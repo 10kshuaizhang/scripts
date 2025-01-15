@@ -11,30 +11,141 @@ kml_folder_path = './kml'  # 设置 KML 文件夹路径
 output_csv_file = 'hiking_routes_kml.csv'  # 设置输出的 CSV 文件名
 
 
-# 复用parse2.py中的函数
+def calculate_total_ascent(route_data):
+    """计算路线的累计爬升
+    
+    参数:
+    route_data: 包含海拔信息的路线坐标点列表
+    
+    返回:
+    float: 累计爬升高度(米)
+    """
+    MIN_ELEVATION_DIFF = 10  # 最小高度差阈值（米）
+    SMOOTHING_WINDOW = 5    # 平滑窗口大小
+    NOISE_THRESHOLD = 5     # 噪声阈值（米）
+    
+    if len(route_data) < 2: 
+        return 0
+        
+    # 1. 首先进行移动平均平滑处理
+    smoothed_elevations = []
+    for i in range(len(route_data)):
+        start_idx = max(0, i - SMOOTHING_WINDOW // 2)
+        end_idx = min(len(route_data), i + SMOOTHING_WINDOW // 2 + 1)
+        window = [route_data[j]["elevation"] for j in range(start_idx, end_idx)]
+        smoothed_elevations.append(sum(window) / len(window))
+    
+    total_ascent = 0
+    current_climb = 0
+    last_valid_elevation = smoothed_elevations[0]
+    
+    for i in range(1, len(smoothed_elevations)):
+        elevation_diff = smoothed_elevations[i] - last_valid_elevation
+        
+        # 2. 过滤噪声
+        if abs(elevation_diff) < NOISE_THRESHOLD:
+            continue
+            
+        # 3. 处理有效的高度变化
+        if elevation_diff > 0:
+            current_climb += elevation_diff
+        else:
+            if current_climb >= MIN_ELEVATION_DIFF:
+                total_ascent += current_climb
+            current_climb = 0
+        
+        last_valid_elevation = smoothed_elevations[i]
+    
+    # 处理最后一段上升（如果有）
+    if current_climb >= MIN_ELEVATION_DIFF:
+        total_ascent += current_climb
+        
+    return total_ascent
+
+
 def determine_route_type(name):
-    # 与parse2.py中相同
-    if 'loop' or '环线' in name.lower():
+    """
+    根据路线名称判断路线类型
+    
+    参数:
+    name: 路线名称
+    
+    返回:
+    string: 路线类型 ('loop'环线, 'outAndBack'往返, 'pointToPoint'穿越, 'other'其他)
+    """
+    name_lower = name.lower()
+    if 'loop' in name_lower or '环线' in name_lower:
         return "loop"
-    elif 'out and back' or '折返' in name.lower() or 'outback' in name.lower():
+    elif ('out and back' in name_lower or '折返' in name_lower or 
+          'outback' in name_lower):
         return "outAndBack"
-    elif 'point to point' or '穿越' in name.lower() or 'pointtopoint' in name.lower():
+    elif ('point to point' in name_lower or '穿越' in name_lower or 
+          'pointtopoint' in name_lower):
         return "pointToPoint"
     else:
         return "other"
 
 
+def determine_route_type_by_coordinates(coordinates):
+    """
+    根据路线坐标点判断路线类型
+    
+    参数:
+    coordinates: 路线坐标点列表
+    
+    返回:
+    string: 路线类型 ('loop'环线, 'outAndBack'往返, 'pointToPoint'穿越, 'other'其他)
+    """
+    if not coordinates or len(coordinates) < 2:
+        return "other"
+
+    start_point = (coordinates[0]["latitude"], coordinates[0]["longitude"])
+    end_point = (coordinates[-1]["latitude"], coordinates[-1]["longitude"])
+
+    # 计算关键距离
+    start_end_distance = geodesic(start_point, end_point).kilometers
+    print(f"起点和终点之间的距离: {start_end_distance:.2f} 公里")
+    total_length = calculate_route_length(coordinates)
+
+    # 如果起终点非常接近
+    if start_end_distance < total_length * 0.1:  # 起终点距离小于总长度的10%
+        # 找到路线中点
+        mid_index = len(coordinates) // 2
+        mid_point = (coordinates[mid_index]["latitude"], coordinates[mid_index]["longitude"])
+        
+        # 计算中点到起点的距离
+        mid_to_start = geodesic(start_point, mid_point).kilometers
+        
+        # 如果中点到起点的距离接近总长度的一半，很可能是折返路线
+        if abs(mid_to_start * 2 - total_length) < total_length * 0.3:
+            return "outAndBack"
+        # 否则判定为环线
+        else:
+            return "loop"
+    
+    # 如果起终点距离较远，则可能是穿越路线
+    return "pointToPoint"
+
+
 def determine_features(name):
-    # 与parse2.py中相同
-    features = ["mountain"]
+    """
+    根据路线名称识别路线特征
+    
+    参数:
+    name: 路线名称
+    
+    返回:
+    list: 路线特征列表，包含各种特征标签
+    """
+    features = []
     feature_keywords = {
-        "瀑布|waterfall": "waterfall",
+        "瀑|瀑布|waterfall": "waterfall",
         "湖|lake": "lake",
-        "山|mountain": "mountain",
-        "森林|forest": "forest",
-        "河|river": "river",
-        "峡谷|canyon": "canyon",
-        "洞穴|cave": "cave",
+        "岭|梁|峰|山|mountain": "mountain",
+        "林|森林|forest": "forest",
+        "沟|溪|河|river": "river",
+        "峡|峡谷|canyon": "canyon",
+        "洞|cave": "cave",
         "海滩|beach": "beach",
         "城市景观|cityview": "cityView",
         "野生动物|wildlife": "wildlife",
@@ -42,12 +153,12 @@ def determine_features(name):
         "露营|camping": "camping",
         "宠物友好|petfriendly": "petFriendly",
         "家庭友好|familyfriendly": "familyFriendly",
-        "隐秘|hidden": "hidden",
-        "壮观景色|epicview": "epicView"
+        "秘|隐秘|hidden": "hidden",
+        "景|壮观景色|epicview": "epicView"
     }
 
     for keywords, feature in feature_keywords.items():
-        if any(re.search(keyword, name, re.IGNORECASE) for keyword in keywords.split('|')):
+        if any(re.search(f".*{keyword}.*", name, re.IGNORECASE) for keyword in keywords.split('|')):
             if feature not in features:
                 features.append(feature)
     return features
@@ -107,7 +218,15 @@ def determine_difficulty(d, h, t):
 
 
 def calculate_route_length(coordinates):
-    # 与parse2.py中相同
+    """
+    计算路线总长度
+    
+    参数:
+    coordinates: 路线坐标点列表，每个点包含经纬度信息
+    
+    返回:
+    float: 路线总长度(单位：公里)
+    """
     length = 0
     for i in range(1, len(coordinates)):
         start = (coordinates[i - 1]["latitude"], coordinates[i - 1]["longitude"])
@@ -117,6 +236,15 @@ def calculate_route_length(coordinates):
 
 
 def parse_kml_file(kml_file):
+    """
+    解析单个KML文件，提取路线信息
+    
+    参数:
+    kml_file: KML文件路径
+    
+    返回:
+    dict: 包含路线完整信息的字典，包括名称、描述、坐标等
+    """
     print(f"\n处理KML文件: {kml_file}")
 
     with open(kml_file, 'rb') as f:
@@ -151,19 +279,29 @@ def parse_kml_file(kml_file):
                 if hasattr(feature.extended_data, 'elements') and feature.extended_data.elements:
                     for data in feature.extended_data.elements:
                         name = data.name.lower()
+                        
                         if 'ascent' in name:
                             route_metadata["total_ascent"] = float(data.value)
-                        elif 'descent' in name:
+                            print(f"设置上升高度: {route_metadata['total_ascent']}米")
+                        if 'descent' in name:
                             route_metadata["total_descent"] = float(data.value)
-                        elif 'time' in name or 'duration' in name:
+                            print(f"设置下降高度: {route_metadata['total_descent']}米")
+                        if 'time' in name or 'duration' in name:
                             route_metadata["estimated_time"] = float(data.value)
-                        elif 'distance' in name or 'length' in name:
-                            route_metadata["distance"] = float(data.value)
-                        elif 'difficulty' in name:
+                            print(f"设置预计时间: {route_metadata['estimated_time']}小时")
+                        if 'mileage' in name:
+                            route_metadata["distance"] = float(data.value)/1000
+                            print(f"设置距离: {route_metadata['distance']}公里")
+                        if 'difficulty' in name:
                             route_metadata["difficulty"] = data.value
+                            print(f"设置难度: {route_metadata['difficulty']}")
+                else:
+                    pass
             except Exception as e:
-                print(f"处理扩展数据时出错: {str(e)}")
                 # 继续执行，不中断处理
+                pass
+        else:
+            pass
 
         # 原有的几何数据处理代码...
         if hasattr(feature, 'features'):
@@ -198,16 +336,33 @@ def parse_kml_file(kml_file):
     # 使用提取的元数据更新route_info
     file_name = os.path.basename(kml_file).split('.')[0]
     length = route_metadata["distance"] if route_metadata["distance"] else calculate_route_length(route_data)
-    elevation_change = route_metadata["total_ascent"] if route_metadata["total_ascent"] else (
-            max(p["elevation"] for p in route_data) - min(p["elevation"] for p in route_data))
+    elevation_change = route_metadata["total_ascent"] if route_metadata["total_ascent"] else calculate_total_ascent(route_data)
 
-    t = length / 4 + elevation_change / 250
+    # 使用新公式计算预计时间（小时）
+    estimated_time = length / 4 + elevation_change / 250
+    
     difficulty = route_metadata["difficulty"] if route_metadata["difficulty"] else determine_difficulty(length,
-                                                                                                        elevation_change,
-                                                                                                        t)
+                                                                                                    elevation_change,
+                                                                                                    estimated_time)
 
-    description = route_metadata["description"] if route_metadata["description"] else (
-        f"这是一条长度为{length:.1f}km的徒步路线，高度变化{elevation_change:.0f}米。")
+    # 添加难度等级的中文映射
+    difficulty_cn = {
+        'easy': '轻松',
+        'moderate': '进阶',
+        'hard': '困难',
+        'expert': '超难'
+    }
+    
+    # 检查description是否包含坐标信息的HTML
+    if (route_metadata["description"] and 
+        ("<div>经度" in route_metadata["description"] or 
+         "<div>纬度" in route_metadata["description"])):
+        # 如果是坐标信息，则使用自动生成的描述
+        description = f"这是一条长度为{length:.1f}公里的{difficulty_cn.get(difficulty, '未知')}级别徒步路线，累计爬升{elevation_change:.0f}米，预计完成时间约{estimated_time:.1f}小时。"
+    else:
+        description = route_metadata["description"] if route_metadata["description"] else (
+            f"这是一条长度为{length:.1f}公里的{difficulty_cn.get(difficulty, '未知')}级别徒步路线，累计爬升{elevation_change:.0f}米，预计完成时间约{estimated_time:.1f}小时。")
+    print(f"\n路线描述: {description}")
 
     name = route_metadata["name"] if route_metadata["name"] else file_name
 
@@ -231,33 +386,23 @@ def parse_kml_file(kml_file):
         "status": "open",
         "thumbnailImage": "https://example.com/default.jpg",
         "length": length,
-        "estimatedTime": t * 3600,
+        "estimatedTime": estimated_time * 3600,
         "rating": 5
     }
 
     return route_info
 
 
-def determine_route_type_by_coordinates(coordinates):
-    # 与parse2.py中相同
-    if not coordinates or len(coordinates) < 2:
-        return "other"
-
-    start_point = (coordinates[0]["latitude"], coordinates[0]["longitude"])
-    end_point = (coordinates[-1]["latitude"], coordinates[-1]["longitude"])
-
-    start_end_distance = geodesic(start_point, end_point).kilometers
-    total_length = calculate_route_length(coordinates)
-
-    if start_end_distance < total_length * 0.1:
-        return "loop"
-    elif abs(start_end_distance * 2 - total_length) < total_length * 0.3:
-        return "outAndBack"
-    else:
-        return "pointToPoint"
-
-
 def generate_csv_from_kml_folder():
+    """
+    处理KML文件夹中的所有KML文件，生成CSV和JSON格式的路线数据
+    
+    功能：
+    1. 遍历KML文件夹
+    2. 解析每个KML文件
+    3. 整合所有路线数据
+    4. 生成CSV和JSON输出文件
+    """
     if not os.path.exists(kml_folder_path):
         os.makedirs(kml_folder_path)
         print(f"创建文件夹: {kml_folder_path}")
